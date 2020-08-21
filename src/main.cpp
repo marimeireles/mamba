@@ -4,12 +4,19 @@
 //
 // The full license is in the file LICENSE, distributed with this software.
 
+#include <iostream>
+#include <map>
+#include <regex>
+#include <utility>
+
 // #include <cxxopts.hpp>
 #include <CLI/CLI.hpp>
+#include <tabulate/table.hpp>
 
 #include "mamba/activation.hpp"
 #include "mamba/channel.hpp"
 #include "mamba/context.hpp"
+#include "mamba/output.hpp"
 #include "mamba/prefix_data.hpp"
 #include "mamba/repo.hpp"
 #include "mamba/shell_init.hpp"
@@ -17,6 +24,7 @@
 #include "mamba/subdirdata.hpp"
 #include "mamba/transaction.hpp"
 #include "mamba/version.hpp"
+
 
 const char banner[] = R"MAMBARAW(
                                            __
@@ -28,6 +36,7 @@ const char banner[] = R"MAMBARAW(
 )MAMBARAW";
 
 using namespace mamba;  // NOLINT(build/namespaces)
+using namespace tabulate;
 
 static struct
 {
@@ -339,6 +348,62 @@ install_specs(const std::vector<std::string>& specs, bool create_env = false)
 }
 
 void
+list_packages()
+{
+    auto& ctx = Context::instance();
+    PrefixData prefix_data(ctx.target_prefix);
+    prefix_data.load();
+
+    std::multimap<std::string, std::string, std::less<std::string>> ordered_packages;
+
+    std::cout << "List of packages in environment: " << ctx.target_prefix << std::endl;
+
+    //order list of packages from prefix_data by alphabetical order
+    for (auto package : prefix_data.m_package_records)
+    {
+        ordered_packages.insert(make_pair(package.second.name, package.second.name));
+        ordered_packages.insert(make_pair(package.second.name, package.second.version));
+        ordered_packages.insert(make_pair(package.second.name, package.second.build_string));
+        //if it's a default channel leave it blank, as conda does
+        if (package.second.channel.find("https://repo.anaconda.com/pkgs/") == 0)
+        {
+            ordered_packages.insert(make_pair(package.second.name, ""));
+        }
+        else
+        {
+            std::vector<std::string> splitted_channel = split(package.second.channel, "/");
+            ordered_packages.insert(make_pair(package.second.name, splitted_channel[3]));
+        }
+    }
+
+    //format and print list of packages
+    Table package_list;
+    printers::Table t({ "Name", "Version", "Build", "Channel" });
+    t.set_alignment({ printers::alignment::left,
+                      printers::alignment::left,
+                      printers::alignment::left,
+                      printers::alignment::left });
+    t.set_padding({ 2, 2, 2, 2 });
+    std::vector<std::string> aux;
+    for (auto it_package = ordered_packages.begin(); it_package != ordered_packages.end();)
+    {
+        auto range = ordered_packages.equal_range(it_package->first);
+        for (auto i = range.first; i != range.second; ++i)
+        {
+            aux.push_back(i->second);
+        }
+        std::advance(it_package, 4);
+    }
+    int j = 0;
+    while (j < (aux.size() - 4))
+    {
+        t.add_row({aux[j], aux[j + 1],  aux[j + 2], aux[j + 3]});
+        j += 4;
+    }
+    t.print(std::cout);
+}
+
+void
 init_install_parser(CLI::App* subcom)
 {
     subcom->add_option("specs", create_options.specs, "Specs to install into the new environment");
@@ -381,10 +446,35 @@ init_create_parser(CLI::App* subcom)
     });
 }
 
-std::string
-version()
+void
+init_list_parser(CLI::App* subcom)
+{
+    subcom->add_option("specs", create_options.specs, "Specs to install into the new environment");
+    init_network_parser(subcom);
+    init_channel_parser(subcom);
+    init_global_parser(subcom);
+
+    subcom->callback([&]() {
+        list_packages();
+    });
+}
+
+std::string version()
 {
     return mamba_version;
+}
+
+//split strings
+std::vector<std::string> split(const std::string& s, char delimiter)
+{
+   std::vector<std::string> tokens;
+   std::string token;
+   std::istringstream tokenStream(s);
+   while (std::getline(tokenStream, token, delimiter))
+   {
+      tokens.push_back(token);
+   }
+   return tokens;
 }
 
 int
@@ -407,6 +497,10 @@ main(int argc, char** argv)
     CLI::App* install_subcom
         = app.add_subcommand("install", "Install packages in active environment");
     init_install_parser(install_subcom);
+
+    CLI::App* list_subcom
+        = app.add_subcommand("list", "List packages in active environment");
+    init_list_parser(list_subcom);
 
     // just for the help text
     app.footer(R"MRAW(To activate environments, use
